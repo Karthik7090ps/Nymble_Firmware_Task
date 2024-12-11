@@ -1,0 +1,32 @@
+//install Arduion AVR compiler package on linux
+1. sudo apt-get install gcc-avr avr-libc
+
+//check for version
+2. avr-gcc --version
+
+
+//Basic Arduino structure in c
+
+#include <avr/io.h>
+#include <util/delay.h>
+
+int main(void) {
+    DDRB |= (1 << PB5); // Set pin 13 (PB5) as output
+
+    while (1) {
+        PORTB ^= (1 << PB5); // Toggle pin 13
+        _delay_ms(500);      // Delay 500ms
+    }
+}
+
+//compile
+avr-gcc -mmcu=atmega328p -Os -c -o main.o main.c
+
+//link
+avr-gcc -mmcu=atmega328p -o main.elf main.o
+
+//create hex
+avr-objcopy -O ihex -R .eeprom main.elf main.hex
+
+//dump
+avrdude -c arduino -p m328p -P /dev/ttyACM0 -b 115200 -U flash:w:main.hex
