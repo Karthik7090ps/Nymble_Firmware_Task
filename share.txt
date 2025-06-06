@@ -2,52 +2,68 @@
 """
 full_swarm_workflow_interactive.py
 
-An interactive, menu‑driven Python CLI that automates the full Perforce + Swarm Helix review workflow:
+An interactive, menu‑driven Python CLI that automates the full Perforce → Swarm Helix review workflow:
 
-  • Perforce operations: add, edit, delete, diff, create‐change, shelve, submit
-  • Swarm review operations: create, attach changelist, edit review metadata, get review details, approve
+  • Perforce operations: add, edit, delete, diff, create‐change, shelve, submit  
+  • Swarm review operations: create, attach changelist, update review metadata, get review details, approve
 
-When you run this script (`python3 full_swarm_workflow_interactive.py`), you will be presented with
-a numbered list of actions. Enter the number corresponding to the action you want to perform, and
-then follow the prompts for any required inputs (file paths, changelist numbers, review IDs, etc.).
+When you run this script:
 
-Environment variables (optional, but recommended for credentials/configuration):
+    python3 full_swarm_workflow_interactive.py
 
-  • P4PORT      – e.g. “perforce:1666”
-  • P4USER      – your Perforce username
-  • P4CLIENT    – your Perforce workspace/client name
-  • P4PASSWD    – your Perforce password (or run “p4 login” once, and leave this blank)
-  • SWARM_URL   – e.g. “https://swarm.example.com”
-  • SWARM_USER  – your Swarm username
-  • SWARM_PASS  – your Swarm password
-  • SWARM_TOKEN – (optional) a bearer token for Swarm API authentication (takes precedence over SWARM_USER/​SWARM_PASS)
+you’ll see a numbered menu. Enter the number of the action you want, then follow on‑screen prompts
+for any required inputs (file paths, changelist numbers, review IDs, etc.).
 
-Adjust SWARM_API_VER if your Swarm installation uses a different API version.
+── ENVIRONMENT VARIABLES ──────────────────────────────────────────────────────
+(All are optional—if not set, the script falls back to the hard‑coded defaults below.)
+
+  P4PORT      – e.g. “perforce:1666”  
+  P4USER      – your Perforce username  
+  P4CLIENT    – your Perforce workspace/client name  
+  P4PASSWD    – your Perforce password (or run “p4 login” once and leave this blank)  
+
+  SWARM_URL   – e.g. “https://swarm.example.com/api/v10”  
+  SWARM_USER  – your Swarm username  
+  SWARM_PASS  – your Swarm password  
+  SWARM_TOKEN – (optional) a Bearer token for Swarm API (takes precedence over SWARM_USER/SWARM_PASS)
+
+Make sure you have:
+
+  • P4Python installed:  
+      pip3 install P4Python
+
+  • helixswarm installed:  
+      pip3 install helixswarm
+
+  • A valid Perforce workspace/client configured (P4PORT, P4USER, P4CLIENT, etc.).  
+  • Swarm server reachable (SWARM_URL should include the “/api/v<version>” prefix, e.g. “https://swarm.mycompany.com/api/v10”).
+
+Adjust SWARM_API_VER below if your Swarm uses a different API version than v10.
 """
 
 import os
 import sys
 import json
 from P4 import P4, P4Exception
-import requests
+from helixswarm import SwarmClient
 
 # ──────────────────────────────────────────
-# CONFIGURATION (Can be overridden via ENV)
+# CONFIGURATION (Defaults, overridden by ENV)
 # ──────────────────────────────────────────
 
-P4PORT   = os.environ.get("P4PORT", "perforce:1666")
-P4USER   = os.environ.get("P4USER", "your_p4_username")
+# Perforce settings:
+P4PORT   = os.environ.get("P4PORT",   "perforce:1666")
+P4USER   = os.environ.get("P4USER",   "your_p4_username")
 P4CLIENT = os.environ.get("P4CLIENT", "your_workspace_name")
 P4PASSWD = os.environ.get("P4PASSWD", "")
 
-SWARM_BASE_URL = os.environ.get("SWARM_URL", "https://swarm.example.com")
-SWARM_USER     = os.environ.get("SWARM_USER", "your_swarm_username")
-SWARM_PASS     = os.environ.get("SWARM_PASS", "your_swarm_password")
-SWARM_TOKEN    = os.environ.get("SWARM_TOKEN", None)
-
-# Adjust to match your Swarm installation if different
-SWARM_API_VER = "v10"
-
+# Swarm settings:
+# SWARM_URL must include “/api/v<version>” suffix, e.g.:
+#   https://swarm.example.com/api/v10
+SWARM_URL   = os.environ.get("SWARM_URL",   "https://swarm.example.com/api/v10")
+SWARM_USER  = os.environ.get("SWARM_USER",  "your_swarm_username")
+SWARM_PASS  = os.environ.get("SWARM_PASS",  "your_swarm_password")
+SWARM_TOKEN = os.environ.get("SWARM_TOKEN", None)
 
 # ──────────────────────────────────────────
 # P4CLIENT HELPER
@@ -56,7 +72,7 @@ SWARM_API_VER = "v10"
 class P4Client:
     """
     Wraps P4Python calls for basic Perforce operations:
-      add, edit, delete, diff, create-change, shelve, submit
+      add, edit, delete, diff, create‐change, shelve, submit, opened.
     """
     def __init__(self):
         self.p4 = P4()
@@ -83,19 +99,19 @@ class P4Client:
         """p4 add <file_path>"""
         print(f"\n→ p4 add {file_path}")
         self.run("add", file_path)
-        print("✔ Done.")
+        print("✔ File opened for add.")
 
     def edit(self, file_path):
         """p4 edit <file_path>"""
         print(f"\n→ p4 edit {file_path}")
         self.run("edit", file_path)
-        print("✔ Done.")
+        print("✔ File opened for edit.")
 
     def delete(self, file_path):
         """p4 delete <file_path>"""
         print(f"\n→ p4 delete {file_path}")
         self.run("delete", file_path)
-        print("✔ Done.")
+        print("✔ File opened for delete.")
 
     def diff(self, file_path=None):
         """
@@ -107,29 +123,31 @@ class P4Client:
             cmd.append(file_path)
 
         print(f"\n→ p4 {' '.join(cmd)}")
-        output = self.run(*cmd)
-        if output:
-            print("\n".join(output))
+        result = self.run(*cmd)
+        if result:
+            print("\n".join(result))
         else:
             print("No differences or error.")
-        print("✔ Done.")
+        print("✔ Diff complete.")
 
     def create_change(self, description="Auto-generated by script"):
         """
-        p4 change -o | modify Description | p4 change -i
+        p4 change -o → modify Description → p4 change -i
         Returns the new changelist number.
         """
-        print("\n→ Creating new changelist")
+        print("\n→ Creating new changelist...")
         spec = self.run("change", "-o")
         if not spec:
             print("❌ Failed to fetch changelist spec.")
             return None
+
         spec_dict = spec[0]
         spec_dict["Description"] = description
         result = self.run("change", "-i", spec_dict)
         if not result:
             print("❌ Failed to create changelist.")
             return None
+
         # Example output: ['Change 12345 created.']
         msg = result[0]
         try:
@@ -144,7 +162,7 @@ class P4Client:
         """p4 shelve -c <changelist_number>"""
         print(f"\n→ p4 shelve -c {changelist_number}")
         self.run("shelve", "-c", str(changelist_number))
-        print("✔ Shelved.")
+        print("✔ Shelved changelist.")
 
     def submit(self, changelist_number):
         """p4 submit -c <changelist_number>"""
@@ -154,7 +172,7 @@ class P4Client:
             print("\n".join(result))
         else:
             print("❌ Submit failed or no output.")
-        print("✔ Done.")
+        print("✔ Submit complete.")
 
     def list_opened(self):
         """p4 opened"""
@@ -164,7 +182,7 @@ class P4Client:
             print("\n".join(result))
         else:
             print("No files opened or error.")
-        print("✔ Done.")
+        print("✔ Listed opened files.")
 
     def disconnect(self):
         """Disconnect from the Perforce server"""
@@ -172,76 +190,79 @@ class P4Client:
 
 
 # ──────────────────────────────────────────
-# SWARM HELPER
+# SWARM CLIENT HELPER (via helixswarm)
 # ──────────────────────────────────────────
 
-class SwarmClient:
+class SwarmHelper:
     """
-    Wraps HTTP calls to the Swarm Helix REST API for review management:
-      create-review, attach-change, update-review, get-review, approve-review
+    Wraps helixswarm.SwarmClient calls for:
+      create-review, attach‐change, update‐review, get‐review, approve‐review.
     """
-    def __init__(self, base_url, username=None, password=None, token=None, api_ver="v10"):
-        self.base_url = base_url.rstrip('/')
-        self.api_ver  = api_ver
-        self.session  = requests.Session()
-
-        if token:
-            self.session.headers.update({"Authorization": f"Bearer {token}"})
+    def __init__(self):
+        # If SWARM_TOKEN is defined, use token-based auth; otherwise username/password.
+        if SWARM_TOKEN:
+            self.client = SwarmClient(SWARM_URL, token=SWARM_TOKEN)
         else:
-            self.session.auth = (username, password)
-
-        self.session.headers.update({"Content-Type": "application/json"})
-
-    def _endpoint(self, path):
-        return f"{self.base_url}/api/{self.api_ver}/{path.lstrip('/')}"
+            self.client = SwarmClient(SWARM_URL, SWARM_USER, SWARM_PASS)
 
     def create_review(self, changelist, description="", reviewers=None):
         """
-        POST /reviews
-        Payload: { "change": <num>, "description": "...", "reviewers": [ ... ] }
-        Returns the new review ID.
+        Creates a new Swarm review for a shelved changelist.
+        Example usage (sync):
+            client.reviews.create({
+                "change": 12345,
+                "description": "My desc",
+                "reviewers": ["alice","bob"]
+            })
+        Returns the new review ID on success.
         """
-        url = self._endpoint("reviews")
-        payload = {"change": changelist}
+        print(f"\n» Swarm: Creating review for CL {changelist}...")
+        payload = { "change": changelist }
         if description:
             payload["description"] = description
         if reviewers:
             payload["reviewers"] = reviewers
 
-        print(f"\n» Swarm: Creating review for changelist {changelist}")
-        resp = self.session.post(url, data=json.dumps(payload), verify=True)
-        if resp.status_code == 200:
-            review_info = resp.json().get("review", {})
-            review_id   = review_info.get("id")
+        try:
+            resp = self.client.reviews.create(payload)
+            review_id = resp["review"]["id"]
             print(f"✔ Review created with ID: {review_id}")
             return review_id
-        else:
-            print("❌ Swarm create review failed:", resp.status_code, resp.text)
+        except Exception as e:
+            print("❌ Swarm create_review failed:", e)
             return None
 
     def attach_change(self, review_id, changelist):
         """
-        POST /reviews/{id}/changes
-        Payload: { "change": <num> }
+        Attaches another shelved changelist to an existing review.
+        Example:
+            client.reviews.append_change("reviews/9876", { "change": 12346 })
         """
-        url = self._endpoint(f"reviews/{review_id}/changes")
-        payload = {"change": changelist}
-        print(f"\n» Swarm: Attaching changelist {changelist} to review {review_id}")
-        resp = self.session.post(url, data=json.dumps(payload), verify=True)
-        if resp.status_code == 200:
-            print("✔ Attached.")
-            return resp.json()
-        else:
-            print("❌ Swarm attach change failed:", resp.status_code, resp.text)
-            return None
+        print(f"\n» Swarm: Attaching CL {changelist} to review {review_id}...")
+        try:
+            # The helixswarm client wants the resource path “reviews/<ID>”
+            resource = f"reviews/{review_id}"
+            payload = { "change": changelist }
+            self.client.reviews.append_change(resource, payload)
+            print("✔ Attached changelist to review.")
+        except Exception as e:
+            print("❌ Swarm attach_change failed:", e)
 
     def update_review(self, review_id, description=None, add_reviewers=None, remove_reviewers=None):
         """
-        PUT /reviews/{id}
-        Payload can include:
-          { "description": "...", "reviewersAdd": [...], "reviewersRemove": [...] }
+        Updates review metadata. Possible fields:
+          • description: new description string (overwrites existing)
+          • reviewersAdd: list of usernames to add
+          • reviewersRemove: list of usernames to remove
+
+        Example:
+            client.reviews.update("reviews/9876", {
+                "description": "New desc",
+                "reviewersAdd": ["dave"],
+                "reviewersRemove": ["carol"]
+            })
         """
-        url = self._endpoint(f"reviews/{review_id}")
+        print(f"\n» Swarm: Updating review {review_id}...")
         payload = {}
         if description is not None:
             payload["description"] = description
@@ -250,57 +271,52 @@ class SwarmClient:
         if remove_reviewers:
             payload["reviewersRemove"] = remove_reviewers
 
-        print(f"\n» Swarm: Updating review {review_id}")
-        resp = self.session.put(url, data=json.dumps(payload), verify=True)
-        if resp.status_code == 200:
-            print("✔ Review updated.")
-            return resp.json()
-        else:
-            print("❌ Swarm update review failed:", resp.status_code, resp.text)
-            return None
+        try:
+            resource = f"reviews/{review_id}"
+            self.client.reviews.update(resource, payload)
+            print("✔ Review metadata updated.")
+        except Exception as e:
+            print("❌ Swarm update_review failed:", e)
 
     def get_review(self, review_id):
         """
-        GET /reviews/{id}
-        Returns JSON with review details.
+        Fetches review details. Prints JSON to screen.
+        Example:
+            resp = client.reviews.get_info(12345)
         """
-        url = self._endpoint(f"reviews/{review_id}")
-        print(f"\n» Swarm: Fetching review {review_id}")
-        resp = self.session.get(url, verify=True)
-        if resp.status_code == 200:
-            review_info = resp.json().get("review", {})
-            print(json.dumps(review_info, indent=2))
-            return review_info
-        else:
-            print("❌ Swarm get review failed:", resp.status_code, resp.text)
+        print(f"\n» Swarm: Fetching review {review_id} details...")
+        try:
+            info = self.client.reviews.get_info(review_id)
+            print(json.dumps(info["review"], indent=2))
+            return info
+        except Exception as e:
+            print("❌ Swarm get_review failed:", e)
             return None
 
     def approve_review(self, review_id, message=""):
         """
-        POST /reviews/{id}/approve
-        Payload: { "message": "Approval comment" }
+        Approves a review. If you want to supply an approval comment, pass it here.
+        Example:
+            client.reviews.approve("reviews/9876", { "message": "LGTM" })
         """
-        url = self._endpoint(f"reviews/{review_id}/approve")
-        payload = {}
-        if message:
-            payload["message"] = message
-
-        print(f"\n» Swarm: Approving review {review_id}")
-        resp = self.session.post(url, data=json.dumps(payload), verify=True)
-        if resp.status_code == 200:
+        print(f"\n» Swarm: Approving review {review_id}...")
+        try:
+            resource = f"reviews/{review_id}"
+            payload = {}
+            if message:
+                payload["message"] = message
+            self.client.reviews.approve(resource, payload)
             print("✔ Review approved.")
-            return resp.json()
-        else:
-            print("❌ Swarm approve review failed:", resp.status_code, resp.text)
-            return None
+        except Exception as e:
+            print("❌ Swarm approve_review failed:", e)
 
 
 # ──────────────────────────────────────────
-# INTERACTIVE MENU
+# INTERACTIVE MENU FUNCTIONS
 # ──────────────────────────────────────────
 
 def print_menu():
-    print("\n===== Perforce + Swarm Helix Workflow Menu =====")
+    print("\n===== Perforce ↔ Swarm Helix Workflow =====")
     print("1)   Perforce: p4 add <file>")
     print("2)   Perforce: p4 edit <file>")
     print("3)   Perforce: p4 delete <file>")
@@ -315,20 +331,15 @@ def print_menu():
     print("12)  Swarm: Fetch and display review details")
     print("13)  Swarm: Approve a review")
     print("14)  Exit")
-    print("================================================")
+    print("============================================")
 
 
 def main():
-    # Initialize clients once
+    # Initialize Perforce client
     p4_client = P4Client()
-    if SWARM_TOKEN:
-        swarm_client = SwarmClient(
-            SWARM_BASE_URL, token=SWARM_TOKEN, api_ver=SWARM_API_VER
-        )
-    else:
-        swarm_client = SwarmClient(
-            SWARM_BASE_URL, username=SWARM_USER, password=SWARM_PASS, api_ver=SWARM_API_VER
-        )
+
+    # Initialize Swarm helper (sync)
+    swarm_helper = SwarmHelper()
 
     while True:
         print_menu()
@@ -338,19 +349,25 @@ def main():
             file_path = input("Enter file path to add: ").strip()
             if file_path:
                 p4_client.add(file_path)
+            else:
+                print("❌ No file path provided.")
 
         elif choice == "2":
             file_path = input("Enter file path to edit: ").strip()
             if file_path:
                 p4_client.edit(file_path)
+            else:
+                print("❌ No file path provided.")
 
         elif choice == "3":
             file_path = input("Enter file path to delete: ").strip()
             if file_path:
                 p4_client.delete(file_path)
+            else:
+                print("❌ No file path provided.")
 
         elif choice == "4":
-            file_path = input("Enter file path to diff (leave blank for all): ").strip()
+            file_path = input("Enter file path to diff (leave blank to diff all): ").strip()
             if file_path:
                 p4_client.diff(file_path)
             else:
@@ -360,12 +377,12 @@ def main():
             p4_client.list_opened()
 
         elif choice == "6":
-            desc = input("Enter description for the new changelist: ").strip()
+            desc = input("Enter description for the new changelist (leave blank for default): ").strip()
             if not desc:
                 desc = "Auto-generated changelist"
             new_cl = p4_client.create_change(description=desc)
             if new_cl is not None:
-                print(f"→ New changelist number: {new_cl}")
+                print(f"→ New pending changelist: {new_cl}")
 
         elif choice == "7":
             cl_input = input("Enter pending changelist number to shelve: ").strip()
@@ -390,11 +407,11 @@ def main():
 
             desc = input("Enter review description (optional): ").strip()
             reviewers_str = input(
-                "Enter Swarm reviewers (space-separated usernames, leave blank for none): "
+                "Enter Swarm reviewers (space‑separated usernames, leave blank for none): "
             ).strip()
             reviewers = reviewers_str.split() if reviewers_str else None
 
-            review_id = swarm_client.create_review(
+            review_id = swarm_helper.create_review(
                 changelist=changelist,
                 description=desc,
                 reviewers=reviewers
@@ -410,7 +427,7 @@ def main():
                 continue
             review_id  = int(rev_input)
             changelist = int(cl_input)
-            swarm_client.attach_change(review_id, changelist)
+            swarm_helper.attach_change(review_id, changelist)
 
         elif choice == "11":
             rev_input = input("Enter Swarm review ID to update: ").strip()
@@ -419,27 +436,27 @@ def main():
                 continue
             review_id = int(rev_input)
 
-            desc = input("Enter new review description (leave blank to skip): ").strip()
-            add_str = input("Enter reviewers to ADD (space-separated, leave blank to skip): ").strip()
-            remove_str = input("Enter reviewers to REMOVE (space-separated, leave blank to skip): ").strip()
+            desc = input("Enter new review description (leave blank to skip): ").strip() or None
+            add_str = input("Enter reviewers to ADD (space‑separated, leave blank to skip): ").strip()
+            remove_str = input("Enter reviewers to REMOVE (space‑separated, leave blank to skip): ").strip()
 
             add_reviewers    = add_str.split() if add_str else None
             remove_reviewers = remove_str.split() if remove_str else None
 
-            swarm_client.update_review(
+            swarm_helper.update_review(
                 review_id=review_id,
-                description=desc if desc else None,
+                description=desc,
                 add_reviewers=add_reviewers,
                 remove_reviewers=remove_reviewers
             )
 
         elif choice == "12":
-            rev_input = input("Enter Swarm review ID to fetch: ").strip()
+            rev_input = input("Enter Swarm review ID to fetch details: ").strip()
             if not rev_input.isdigit():
                 print("❌ Invalid review ID.")
                 continue
             review_id = int(rev_input)
-            swarm_client.get_review(review_id)
+            swarm_helper.get_review(review_id)
 
         elif choice == "13":
             rev_input = input("Enter Swarm review ID to approve: ").strip()
@@ -448,7 +465,7 @@ def main():
                 continue
             review_id = int(rev_input)
             msg = input("Enter approval comment (leave blank for none): ").strip()
-            swarm_client.approve_review(review_id, message=msg)
+            swarm_helper.approve_review(review_id, message=msg)
 
         elif choice == "14":
             print("\nExiting. Goodbye!")
@@ -457,7 +474,7 @@ def main():
         else:
             print("❌ Invalid choice. Please enter a number between 1 and 14.")
 
-    # Clean up & disconnect from Perforce
+    # Disconnect Perforce before exiting
     p4_client.disconnect()
 
 
