@@ -274,3 +274,96 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+import os
+import sys
+import json
+import requests
+
+# ──────────────────────────────────────────
+# CONFIGURATION
+# ──────────────────────────────────────────
+
+SWARM_URL    = os.environ.get("SWARM_URL", "https://myswarm-url/api/v11")
+SWARM_USER   = os.environ.get("SWARM_USER", "username")
+SWARM_TICKET = os.environ.get("SWARM_TICKET", "your-p4-ticket-or-password")
+
+# Optional: path to your CA bundle, or leave None to use default system CAs
+CA_BUNDLE    = os.environ.get("REQUESTS_CA_BUNDLE", None)
+
+
+def create_review(
+    change: str,
+    description: str,
+    reviewers: list[str] = None,
+    required_reviewers: list[str] = None,
+    reviewer_groups: list[dict] = None
+) -> dict:
+    """
+    Create a Swarm review via REST.
+
+    :param change: changelist ID (as string)
+    :param description: free-form text
+    :param reviewers: list of Swarm usernames (optional)
+    :param required_reviewers: list of Swarm usernames who must review (optional)
+    :param reviewer_groups: list of dicts, each with keys:
+        - name (str), required (bool as str), quorum (str or int)  (optional)
+    :returns: the JSON response from Swarm (parsed into a dict)
+    """
+    url = f"{SWARM_URL.rstrip('/')}/reviews"
+    payload = {
+        "change": change,
+        "description": description
+    }
+    if reviewers:
+        payload["reviewers"] = reviewers
+    if required_reviewers:
+        payload["requiredReviewers"] = required_reviewers
+    if reviewer_groups:
+        payload["reviewerGroups"] = reviewer_groups
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    # Basic auth with "username:ticket"
+    auth = (SWARM_USER, SWARM_TICKET)
+
+    resp = requests.post(
+        url,
+        auth=auth,
+        headers=headers,
+        json=payload,
+        verify=CA_BUNDLE if CA_BUNDLE else True
+    )
+    # Raise an exception on HTTP error (401, 403, 4xx, 5xx)
+    resp.raise_for_status()
+    return resp.json()
+
+
+if __name__ == "__main__":
+    # Example body (same as your mybodyfilename.txt):
+    body = {
+      "change": "12345",
+      "description": "This is the review description.",
+      "reviewers": ["raj", "mei"],
+      "requiredReviewers": ["vera", "dai"],
+      "reviewerGroups": [
+        {"name": "WebDesigners",  "required": "true", "quorum": "1"},
+        {"name": "Developers",    "required": "true"},
+        {"name": "Administrators"}
+      ]
+    }
+
+    try:
+        result = create_review(**body)
+        print("Created review successfully:")
+        print(json.dumps(result, indent=2))
+    except requests.HTTPError as e:
+        print(f"❌ HTTP {e.response.status_code}: {e.response.text}")
+        sys.exit(1)
+
