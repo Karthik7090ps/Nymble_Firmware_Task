@@ -278,92 +278,222 @@ if __name__ == "__main__":
 
 
 
+#!/usr/bin/env python3
+"""
+swarm_review_curl.py
+
+A Python wrapper for Helix Swarm’s Review API, implemented with curl via subprocess.
+Each method corresponds to one of the Swarm “reviews” endpoints and constructs the
+appropriate curl command.
+
+Requirements:
+  • Python 3.6+
+  • curl in your PATH
+
+Environment variables:
+  SWARM_URL       – e.g. "https://swarm.example.com/api/v11"
+  SWARM_TOKEN     – your Swarm API bearer token
+  SWARM_VERIFY    – "false" to skip cert checks, otherwise omitted
+  SWARM_CA_BUNDLE – path to a custom CA bundle (optional)
+"""
+
 import os
-import sys
+import shlex
 import json
-import requests
+import subprocess
+from typing import Optional, List, Dict, Any, Union
+
+class SwarmReviewCurl:
+    def __init__(self,
+                 base_url: str,
+                 token: str,
+                 verify_ssl: bool = True,
+                 ca_bundle: Optional[str] = None):
+        """
+        :param base_url:   e.g. "https://swarm.example.com/api/v11"
+        :param token:      Bearer token
+        :param verify_ssl: if False, adds -k to curl
+        :param ca_bundle:  if set, adds --cacert <path> to curl
+        """
+        self.base = base_url.rstrip('/')
+        self.token = token
+        self.verify_ssl = verify_ssl
+        self.ca_bundle = ca_bundle
+
+    def _curl(self,
+              method: str,
+              path: str,
+              data: Optional[Union[Dict, List]] = None,
+              params: Optional[Dict[str, Union[str,int]]] = None
+             ) -> Any:
+        """
+        Core curl invoker.
+        """
+        url = f"{self.base}/{path.lstrip('/')}"
+        # append query params
+        if params:
+            qs = '&'.join(f"{k}={shlex.quote(str(v))}" for k,v in params.items())
+            url = f"{url}?{qs}"
+
+        cmd = ["curl", "-s", "-X", method]
+        cmd += ["-H", f"Authorization: Bearer {self.token}"]
+        cmd += ["-H", "Accept: application/json"]
+
+        if data is not None:
+            payload = json.dumps(data)
+            cmd += ["-H", "Content-Type: application/json", "--data", payload]
+
+        if not self.verify_ssl:
+            cmd.append("-k")
+        elif self.ca_bundle:
+            cmd += ["--cacert", self.ca_bundle]
+
+        cmd.append(url)
+
+        # Run and capture output
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"curl failed: {result.stderr.strip()}")
+        # parse JSON
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise ValueError(f"Invalid JSON response: {result.stdout!r}")
+
+    def list_reviews(self,
+                     **kwargs
+                    ) -> Dict:
+        """
+        GET /reviews
+        Optional kwargs: max, project, after, afterUpdated, resultOrder, state,
+                         keywords, keywordsFields, fields
+        """
+        return self._curl("GET", "reviews", params=kwargs)["data"]
+
+    def get_review(self,
+                   review_id: Union[int,str],
+                   fields: Optional[Union[str,List[str]]] = None
+                  ) -> Dict:
+        """
+        GET /reviews/{id}
+        """
+        params = {}
+        if fields:
+            params["fields"] = fields if isinstance(fields, str) else ','.join(fields)
+        return self._curl("GET", f"reviews/{review_id}", params=params)["review"]
+
+    def create_review(self,
+                      change: Union[int,str],
+                      description: Optional[str] = None,
+                      reviewers: Optional[List[str]] = None,
+                      requiredReviewers: Optional[List[str]] = None,
+                      reviewerGroups: Optional[List[Dict]] = None
+                     ) -> int:
+        """
+        POST /reviews
+        Required: change
+        Returns new review ID.
+        """
+        payload: Dict[str, Any] = {"change": str(change)}
+        if description:       payload["description"]       = description
+        if reviewers:         payload["reviewers"]         = reviewers
+        if requiredReviewers: payload["requiredReviewers"] = requiredReviewers
+        if reviewerGroups:    payload["reviewerGroups"]    = reviewerGroups
+
+        resp = self._curl("POST", "reviews", data=payload)
+        return resp["review"]["id"]
+
+    def attach_change(self,
+                      review_id: Union[int,str],
+                      change: Union[int,str]
+                     ) -> None:
+        """
+        POST /reviews/{id}/changes
+        """
+        payload = {"change": str(change)}
+        self._curl("POST", f"reviews/{review_id}/changes", data=payload)
+
+    def update_review(self,
+                      review_id: Union[int,str],
+                      description: Optional[str] = None,
+                      reviewersAdd: Optional[List[str]] = None,
+                      reviewersRemove: Optional[List[str]] = None
+                     ) -> None:
+        """
+        PUT /reviews/{id}
+        """
+        payload: Dict[str, Any] = {}
+        if description is not None:     payload["description"]    = description
+        if reviewersAdd:                payload["reviewersAdd"]   = reviewersAdd
+        if reviewersRemove:             payload["reviewersRemove"]= reviewersRemove
+        self._curl("PUT", f"reviews/{review_id}", data=payload)
+
+    def approve_review(self,
+                       review_id: Union[int,str],
+                       message: Optional[str] = None
+                      ) -> None:
+        """
+        POST /reviews/{id}/approve
+        """
+        payload = {"message": message} if message else {}
+        self._curl("POST", f"reviews/{review_id}/approve", data=payload)
+
+    def reject_review(self,
+                      review_id: Union[int,str],
+                      message: Optional[str] = None
+                     ) -> None:
+        """
+        POST /reviews/{id}/reject
+        """
+        payload = {"message": message} if message else {}
+        self._curl("POST", f"reviews/{review_id}/reject", data=payload)
+
+    def close_review(self,
+                     review_id: Union[int,str]
+                    ) -> None:
+        """
+        POST /reviews/{id}/close
+        """
+        self._curl("POST", f"reviews/{review_id}/close")
 
 # ──────────────────────────────────────────
-# CONFIGURATION
+# Example usage
 # ──────────────────────────────────────────
-
-SWARM_URL    = os.environ.get("SWARM_URL", "https://myswarm-url/api/v11")
-SWARM_USER   = os.environ.get("SWARM_USER", "username")
-SWARM_TICKET = os.environ.get("SWARM_TICKET", "your-p4-ticket-or-password")
-
-# Optional: path to your CA bundle, or leave None to use default system CAs
-CA_BUNDLE    = os.environ.get("REQUESTS_CA_BUNDLE", None)
-
-
-def create_review(
-    change: str,
-    description: str,
-    reviewers: list[str] = None,
-    required_reviewers: list[str] = None,
-    reviewer_groups: list[dict] = None
-) -> dict:
-    """
-    Create a Swarm review via REST.
-
-    :param change: changelist ID (as string)
-    :param description: free-form text
-    :param reviewers: list of Swarm usernames (optional)
-    :param required_reviewers: list of Swarm usernames who must review (optional)
-    :param reviewer_groups: list of dicts, each with keys:
-        - name (str), required (bool as str), quorum (str or int)  (optional)
-    :returns: the JSON response from Swarm (parsed into a dict)
-    """
-    url = f"{SWARM_URL.rstrip('/')}/reviews"
-    payload = {
-        "change": change,
-        "description": description
-    }
-    if reviewers:
-        payload["reviewers"] = reviewers
-    if required_reviewers:
-        payload["requiredReviewers"] = required_reviewers
-    if reviewer_groups:
-        payload["reviewerGroups"] = reviewer_groups
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    # Basic auth with "username:ticket"
-    auth = (SWARM_USER, SWARM_TICKET)
-
-    resp = requests.post(
-        url,
-        auth=auth,
-        headers=headers,
-        json=payload,
-        verify=CA_BUNDLE if CA_BUNDLE else True
-    )
-    # Raise an exception on HTTP error (401, 403, 4xx, 5xx)
-    resp.raise_for_status()
-    return resp.json()
-
 
 if __name__ == "__main__":
-    # Example body (same as your mybodyfilename.txt):
-    body = {
-      "change": "12345",
-      "description": "This is the review description.",
-      "reviewers": ["raj", "mei"],
-      "requiredReviewers": ["vera", "dai"],
-      "reviewerGroups": [
-        {"name": "WebDesigners",  "required": "true", "quorum": "1"},
-        {"name": "Developers",    "required": "true"},
-        {"name": "Administrators"}
-      ]
-    }
+    api = SwarmReviewCurl(
+        base_url=os.environ["SWARM_URL"],
+        token=os.environ["SWARM_TOKEN"],
+        verify_ssl=os.environ.get("SWARM_VERIFY","true").lower() not in ("0","false"),
+        ca_bundle=os.environ.get("SWARM_CA_BUNDLE")
+    )
 
-    try:
-        result = create_review(**body)
-        print("Created review successfully:")
-        print(json.dumps(result, indent=2))
-    except requests.HTTPError as e:
-        print(f"❌ HTTP {e.response.status_code}: {e.response.text}")
-        sys.exit(1)
+    # 1) List up to 10 reviews
+    data = api.list_reviews(max=10)
+    print("Recent reviews:", data["reviews"])
+
+    # 2) Create a new review
+    new_id = api.create_review(
+        change=12345,
+        description="This is the review description.",
+        reviewers=["raj","mei"],
+        requiredReviewers=["vera","dai"],
+        reviewerGroups=[
+            {"name":"WebDesigners","required":"true","quorum":"1"},
+            {"name":"Developers","required":"true"},
+            {"name":"Administrators"}
+        ]
+    )
+    print("Created review ID:", new_id)
+
+    # 3) Fetch that review
+    review = api.get_review(new_id)
+    print(json.dumps(review, indent=2))
+
+    # 4) Approve it
+    api.approve_review(new_id, message="LGTM!")
+
+    # 5) Close it
+    api.close_review(new_id)
+
 
